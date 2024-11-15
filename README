@@ -1,0 +1,65 @@
+# One Finance - Flask Backend
+
+## Overview
+This project provides a backend for processing payments using Stripe. The backend is built with Flask and integrates with the Stripe API.
+
+## Setup Instructions
+
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/yourusername/one-finance.git
+    ```
+
+2. Navigate to the project directory:
+    ```bash
+    cd one-finance
+    ```
+
+3. Set up the virtual environment:
+    ```bash
+    python -m venv venv
+    ```
+
+4. Activate the virtual environment:
+    ```bash
+    source venv/bin/activate  # macOS/Linux
+    venv\Scripts\activate     # Windows
+    ```
+
+5. Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+6. Create a `.env` file and add your **Stripe API Key**:
+    ```
+    STRIPE_API_KEY=sk_test_yourSecretKeyHere
+    ```
+
+7. Run the Flask application:
+    ```bash
+    python app.py
+    ```
+
+8. The server will run on `http://127.0.0.1:5000`.
+
+## API Endpoints
+
+### `POST /create-payment-intent`
+- **Description**: Creates a payment intent for Stripe.
+- **Request Body**:
+    ```json
+    {
+        "amount": 2000,  // Amount in cents (e.g., $20 = 2000)
+        "currency": "usd"
+    }
+    ```
+- **Response**:
+    ```json
+    {
+        "clientSecret": "pi_1234567890abcdef_client_secret_abcdefg"
+    }
+    ```
+
+## License
+MIT License
