@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 import stripe
 import os
 from dotenv import load_dotenv
+import firebase_admin
+from firebase_admin import credentials, firestore
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -11,12 +14,17 @@ app = Flask(__name__)
 # Set Stripe secret key from environment
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
-# You can also store your publishable key in .env
-publishable_key = os.getenv('STRIPE_PUBLISHABLE_KEY')
+# Firebase Setup
+cred = credentials.Certificate(os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY'))
+firebase_admin.initialize_app(cred)
+db = firestore.client()  # Firestore client
 
+# Firestore Collection name
+payments_collection = db.collection('payments')
+
+# Stripe Webhook Secret
 endpoint_secret = "whsec_55nwiw87lB8o55qX7gxJ2GRlcbzrdVz0"
 
-# Create Payment Intent (for initial payment setup)
 @app.route('/create-payment-intent', methods=['POST'])
 def create_payment_intent():
     try:
@@ -35,6 +43,17 @@ def create_payment_intent():
             capture_method='manual',  # Allow for manual capture (useful if you want to authorize and capture later)
         )
 
+        # Store the payment intent details in Firestore
+        payment_ref = payments_collection.document(intent.id)  # Use the PaymentIntent ID as the Firestore document ID
+        payment_ref.set({
+            'amount': intent.amount,
+            'currency': intent.currency,
+            'status': intent.status,  # Initial status
+            'created_at': datetime.utcnow(),
+            'payment_intent_id': intent.id  # Store the PaymentIntent ID for reference
+        })
+
+        # Return the client secret to the frontend
         return jsonify({'clientSecret': intent.client_secret})  # Return the clientSecret for frontend
 
     except stripe.error.StripeError as e:
@@ -44,17 +63,13 @@ def create_payment_intent():
         # Catch all other errors
         return jsonify({'error': str(e)}), 400
 
-
+# Handle Stripe Webhook for Payment Success and Charge Success
 @app.route('/webhook', methods=['POST'])
 def stripe_webhook():
-    print("recieved webhook")
+    print("Received webhook")
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
 
-    # Print to debug
-    print(f"Received payload: {payload}")
-    print(f"Received Stripe-Signature: {sig_header}")
-    
     # Verify the webhook signature to ensure the request is from Stripe
     try:
         event = stripe.Webhook.construct_event(
@@ -69,45 +84,80 @@ def stripe_webhook():
         print(f"Invalid signature: {e}")
         return 'Invalid signature', 400
 
-    # Handle the event
+    # Handle the event for successful payment intent
     if event['type'] == 'payment_intent.succeeded':
         payment_intent = event['data']['object']  # Contains the payment intent object
         handle_payment_intent_succeeded(payment_intent)
-    
-    elif event['type'] == 'payment_intent.failed':
-        payment_intent = event['data']['object']  # Contains the payment intent object
-        handle_payment_intent_failed(payment_intent)
 
-    # Other event types can be added here as needed
+    # Handle the event for successful charge (as a fallback or for different scenarios)
+    elif event['type'] == 'charge.succeeded':
+        charge = event['data']['object']  # Contains the charge object
+        handle_charge_succeeded(charge)
 
     return '', 200  # Respond to Stripe that the event was received successfully
 
 def handle_payment_intent_succeeded(payment_intent):
-    # Payment succeeded, you can update your database to mark the payment as successful
+    # Payment succeeded, you can update Firestore to mark the payment as successful
     print(f"Payment for {payment_intent['amount_received']} succeeded!")
 
-    # Example: Update order status in your database
-    # order = Order.query.filter_by(payment_intent_id=payment_intent['id']).first()
-    # if order:
-    #     order.status = 'paid'
-    #     db.session.commit()
+    # Find the payment in Firestore by its payment_intent_id
+    payment_ref = payments_collection.document(payment_intent['id'])
+    payment_data = payment_ref.get()
 
-    # Optionally, send a confirmation email or notify the user
-    # send_email(order.user_email, 'Payment Successful', 'Your payment was successful!')
-
-def handle_payment_intent_failed(payment_intent):
-    # Payment failed, you can update your database to mark the payment as failed
-    print(f"Payment for {payment_intent['amount_received']} failed!")
-
-    # Example: Update order status in your database
-    # order = Order.query.filter_by(payment_intent_id=payment_intent['id']).first()
-    # if order:
-    #     order.status = 'failed'
-    #     db.session.commit()
-
-    # Optionally, notify the user about the failure
-    # send_email(order.user_email, 'Payment Failed', 'Your payment failed. Please try again.')
+    if payment_data.exists:
+        # Update the status of the payment in Firestore
+        payment_ref.update({
+            'status': 'succeeded',
+            'completed_at': datetime.utcnow()
+        })
+        print(f"Payment status updated to 'succeeded' for PaymentIntent {payment_intent['id']}")
 
 
+def handle_charge_succeeded(charge):
+    # Payment succeeded for charge, you can update Firestore to mark the payment as successful
+    print(f"Charge for {charge['amount']} succeeded!")
+    update_balance_in_firestore(charge['amount'])
+
+    #TODO retrieve paymentIntent Object charityOwner name then pass to update_balance-firestore
+    # Find the payment in Firestore by its charge_id (or use payment_intent.id if needed)
+    payment_ref = payments_collection.document(charge['payment_intent'])
+    payment_data = payment_ref.get()
+
+    if payment_data.exists:
+        # Update the status of the payment in Firestore
+        payment_ref.update({
+            'status': 'succeeded',
+            'completed_at': datetime.utcnow()
+        })
+        print(f"Payment status updated to 'succeeded' for Charge {charge['id']}")
+
+        # Update the balance in Firestore (charity -> mother document)
+
+def update_balance_in_firestore(payment_amount):
+    print("Attempted to update balance")
+    # Reference to the 'mother' document in the 'charity' collection
+    doc_ref = db.collection('charity').document('mother')
+
+    # Get the current balance
+    doc = doc_ref.get()
+    
+    if doc.exists:
+        # Debugging: Print the document to see the structure
+        print("Document data:", doc.to_dict())
+        
+        # Now safely access the balance field
+        current_balance = doc.get('balance')  # Default to 0 if 'balance' field does not exist
+        new_balance = current_balance + payment_amount  # Add payment amount to current balance
+        
+        # Update the balance field in the Firestore document
+        doc_ref.update({
+            'balance': new_balance
+        })
+        print(f"Balance updated to {new_balance} in Firestore (charity -> mother).")
+    else:
+        print("Document 'mother' does not exist in Firestore.")
+
+    
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(port=3000, debug=True)
+
