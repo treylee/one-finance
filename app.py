@@ -31,6 +31,7 @@ def create_payment_intent():
         data = request.json
         amount = data.get('amount')
         currency = data.get('currency', 'usd')  # Default to USD if no currency is provided
+        charity = data.get('charity')  # Extract charity information from the request
 
         if not amount:
             return jsonify({'error': 'Amount is required'}), 400
@@ -50,7 +51,8 @@ def create_payment_intent():
             'currency': intent.currency,
             'status': intent.status,  # Initial status
             'created_at': datetime.utcnow(),
-            'payment_intent_id': intent.id  # Store the PaymentIntent ID for reference
+            'payment_intent_id': intent.id,  # Store the PaymentIntent ID for reference
+            'charity': charity  # Save the charity info in Firestore
         })
 
         # Return the client secret to the frontend
@@ -85,12 +87,12 @@ def stripe_webhook():
         return 'Invalid signature', 400
 
     # Handle the event for successful payment intent
-    if event['type'] == 'payment_intent.succeeded':
-        payment_intent = event['data']['object']  # Contains the payment intent object
-        handle_payment_intent_succeeded(payment_intent)
+    #if event['type'] == 'payment_intent.succeeded':
+    #    payment_intent = event['data']['object']  # Contains the payment intent object
+     #   handle_payment_intent_succeeded(payment_intent)
 
     # Handle the event for successful charge (as a fallback or for different scenarios)
-    elif event['type'] == 'charge.succeeded':
+    if event['type'] == 'charge.succeeded':
         charge = event['data']['object']  # Contains the charge object
         handle_charge_succeeded(charge)
 
@@ -112,18 +114,22 @@ def handle_payment_intent_succeeded(payment_intent):
         })
         print(f"Payment status updated to 'succeeded' for PaymentIntent {payment_intent['id']}")
 
-
 def handle_charge_succeeded(charge):
     # Payment succeeded for charge, you can update Firestore to mark the payment as successful
     print(f"Charge for {charge['amount']} succeeded!")
     update_balance_in_firestore(charge['amount'])
 
-    #TODO retrieve paymentIntent Object charityOwner name then pass to update_balance-firestore
-    # Find the payment in Firestore by its charge_id (or use payment_intent.id if needed)
+    # Retrieve the payment intent from the charge object
     payment_ref = payments_collection.document(charge['payment_intent'])
     payment_data = payment_ref.get()
 
     if payment_data.exists:
+        charity_name = payment_data.get('charity')  # Retrieve the charity name from the payment document
+
+        # If charity name exists, update the charity's balance document
+        if charity_name:
+            update_charity_balance(charity_name, charge['amount'])
+
         # Update the status of the payment in Firestore
         payment_ref.update({
             'status': 'succeeded',
@@ -131,10 +137,8 @@ def handle_charge_succeeded(charge):
         })
         print(f"Payment status updated to 'succeeded' for Charge {charge['id']}")
 
-        # Update the balance in Firestore (charity -> mother document)
-
 def update_balance_in_firestore(payment_amount):
-    print("Attempted to update balance")
+    print("Attempted to update mother balance")
     # Reference to the 'mother' document in the 'charity' collection
     doc_ref = db.collection('charity').document('mother')
 
@@ -156,6 +160,31 @@ def update_balance_in_firestore(payment_amount):
         print(f"Balance updated to {new_balance} in Firestore (charity -> mother).")
     else:
         print("Document 'mother' does not exist in Firestore.")
+
+def update_charity_balance(charity_name, payment_amount):
+    print(f"Attempted to update {charity_name} balance")
+    
+    # Reference to the charity document in the 'charity' collection based on the charity name
+    charity_doc_ref = db.collection('charity').document(charity_name)
+
+    # Get the current balance for the specific charity
+    doc = charity_doc_ref.get()
+    
+    if doc.exists:
+        # Debugging: Print the document to see the structure
+        print(f"Charity document data for {charity_name}:", doc.to_dict())
+        
+        # Safely access the balance field for the charity
+        current_balance = doc.get('balance')  # Default to 0 if 'balance' field does not exist
+        new_balance = current_balance + payment_amount  # Add payment amount to the current balance
+        
+        # Update the balance field in the specific charity document
+        charity_doc_ref.update({
+            'balance': new_balance
+        })
+        print(f"Balance updated to {new_balance} in Firestore (charity -> {charity_name}).")
+    else:
+        print(f"Document for charity {charity_name} does not exist in Firestore.")
 
     
 if __name__ == '__main__':
