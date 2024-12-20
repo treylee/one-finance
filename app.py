@@ -29,16 +29,23 @@ endpoint_secret = "whsec_55nwiw87lB8o55qX7gxJ2GRlcbzrdVz0"
 def create_payment_intent():
     try:
         data = request.json
+        print("Data sent from Apple:", data)
+
+        # Retrieve the amount in cents from the frontend
         amount = data.get('amount')
         currency = data.get('currency', 'usd')  # Default to USD if no currency is provided
         charity = data.get('charity')  # Extract charity information from the request
+
+        # Validate the amount (ensure it's an integer and greater than 0)
+        if not isinstance(amount, int) or amount <= 0:
+            return jsonify({'error': 'Amount must be a positive integer in cents'}), 400
 
         if not amount:
             return jsonify({'error': 'Amount is required'}), 400
 
         # Create a PaymentIntent with the specified amount and currency
         intent = stripe.PaymentIntent.create(
-            amount=int(amount),  # Amount should be in cents
+            amount=amount,  # Amount is already in cents
             currency=currency,
             payment_method_types=['card'],  # Specify allowed payment methods (e.g., card, Apple Pay, etc.)
             capture_method='manual',  # Allow for manual capture (useful if you want to authorize and capture later)
@@ -85,11 +92,6 @@ def stripe_webhook():
         # Invalid signature
         print(f"Invalid signature: {e}")
         return 'Invalid signature', 400
-
-    # Handle the event for successful payment intent
-    #if event['type'] == 'payment_intent.succeeded':
-    #    payment_intent = event['data']['object']  # Contains the payment intent object
-     #   handle_payment_intent_succeeded(payment_intent)
 
     # Handle the event for successful charge (as a fallback or for different scenarios)
     if event['type'] == 'charge.succeeded':
@@ -138,7 +140,7 @@ def handle_charge_succeeded(charge):
         print(f"Payment status updated to 'succeeded' for Charge {charge['id']}")
 
 def update_balance_in_firestore(payment_amount):
-    print("Attempted to update mother balance")
+    print("Attempted to update balance")
     # Reference to the 'mother' document in the 'charity' collection
     doc_ref = db.collection('charity').document('mother')
 
@@ -189,4 +191,3 @@ def update_charity_balance(charity_name, payment_amount):
     
 if __name__ == '__main__':
     app.run(port=3000, debug=True)
-
